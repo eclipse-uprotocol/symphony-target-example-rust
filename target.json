@@ -1,0 +1,46 @@
+{
+    "spec": {
+        "displayName": "Vehicle_ECUs",
+        "components": [
+            {
+                "name": "Engine Controller",
+                "metadata": {
+                    "manufacturer": "ACME Inc.",
+                    "model": "EC-14"
+                },
+                "type": "ecu.fw",
+                "properties": {
+                    "fw-image": "https://acme.io/fw/engine-control-1.45.img"
+                }
+            },
+            {
+                "name": "Telematics Unit",
+                "type": "ecu.fw",
+                "properties": {
+                    "fw-image": "https://non-existent.io/fw/telematics-unit-2.0.img"
+                },
+                "parameters": {
+                    "back-end-url": "https://non-existent.io/telematics"
+                }
+            }
+        ],
+        "topologies": [
+            {
+                "bindings": [
+                    {
+                        "role": "ecu.fw",
+                        "provider": "providers.target.rust",
+                        "config": {
+                            "name": "ECU Firmware Updater",
+                            "libFile": "/home/hak8fe/git/symphony/api/pkg/apis/v1alpha1/providers/target/rust/target/release/libuprotocol.so",
+                            "libHash": "any",
+                            "localEntity": "up://symphony/DA00/1/0",
+                            "getMethodUri": "//ecu-updater.app/A100/1/1",
+                            "brokerAddress": "mqtt://localhost:1883"
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+}
