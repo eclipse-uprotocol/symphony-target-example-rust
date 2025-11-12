@@ -12,21 +12,25 @@
  ********************************************************************************/
 use std::{collections::HashMap, sync::RwLock};
 
+use async_trait::async_trait;
 use log::info;
 use symphony::models::{ComponentResultSpec, ComponentSpec, DeploymentSpec, State};
 
+use up_rust::symphony::DeploymentTarget;
+
 #[derive(Default)]
-pub(crate) struct DeploymentState {
+pub(crate) struct EcuTarget {
     // component name -> component
     components: RwLock<HashMap<String, ComponentSpec>>,
 }
 
-impl DeploymentState {
-    pub(crate) fn get_status(
+#[async_trait]
+impl DeploymentTarget for EcuTarget {
+    async fn get(
         &self,
         references: Vec<ComponentSpec>,
         _deployment_spec: DeploymentSpec,
-    ) -> Vec<ComponentSpec> {
+    ) -> Result<Vec<ComponentSpec>, Box<dyn core::error::Error>> {
         let mut result = vec![];
         if let Ok(components_read) = self.components.read() {
             references.iter().for_each(|spec| {
@@ -34,20 +38,29 @@ impl DeploymentState {
                     result.push(v.clone());
                 }
             });
+        } else {
+            return Err("failed to acquire lock for reading components".into());
         }
-        result
+        Ok(result)
     }
 
-    pub(crate) fn update_components(
+    async fn update(
         &self,
         components_to_update: Vec<ComponentSpec>,
         _deployment_spec: DeploymentSpec,
-    ) -> HashMap<String, ComponentResultSpec> {
+    ) -> Result<HashMap<String, ComponentResultSpec>, Box<dyn core::error::Error>> {
         let mut result = HashMap::new();
         components_to_update.iter().for_each(|spec| {
             if let Ok(mut components_write) = self.components.write() {
-                if let Some(fw_image_url) = spec.properties.as_ref().and_then(|props| props.get("fw-image")) {
-                    info!("installing firmware [name: {}, FW Image: {}]", spec.name, fw_image_url);
+                if let Some(fw_image_url) = spec
+                    .properties
+                    .as_ref()
+                    .and_then(|props| props.get("fw-image"))
+                {
+                    info!(
+                        "installing firmware [name: {}, FW Image: {}]",
+                        spec.name, fw_image_url
+                    );
                     components_write.insert(spec.name.clone(), spec.clone());
                     result.insert(
                         spec.name.clone(),
@@ -63,7 +76,8 @@ impl DeploymentState {
                         spec.name.clone(),
                         ComponentResultSpec {
                             status: State::InvalidArgument,
-                            message: "Firmware ComponentSpec must contain fw-image property".to_string(),
+                            message: "Firmware ComponentSpec must contain fw-image property"
+                                .to_string(),
                         },
                     );
                 }
@@ -77,16 +91,16 @@ impl DeploymentState {
                 );
             }
         });
-        result
+        Ok(result)
     }
 
-    pub(crate) fn delete_components(
+    async fn delete(
         &self,
         components_to_delete: Vec<ComponentSpec>,
         _deployment_spec: DeploymentSpec,
-    ) -> HashMap<String, ComponentResultSpec> {
+    ) -> Result<HashMap<String, ComponentResultSpec>, Box<dyn core::error::Error>> {
         let mut result = HashMap::new();
-            components_to_delete.iter().for_each(|spec| {
+        components_to_delete.iter().for_each(|spec| {
             if let Ok(mut components_write) = self.components.write() {
                 info!("removing firmware [{}]", spec.name);
                 components_write.remove(&spec.name);
@@ -107,6 +121,6 @@ impl DeploymentState {
                 );
             }
         });
-        result
+        Ok(result)
     }
 }
