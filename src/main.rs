@@ -30,19 +30,15 @@ use std::{sync::Arc, time::Duration};
 use backon::{ExponentialBuilder, Retryable};
 use clap::{Parser, command};
 use clap_num::maybe_hex;
-use log::{debug, info, log_enabled, warn};
-use serde_json::Value;
-use symphony::models::{ComponentSpec, DeploymentSpec};
+use log::info;
 use up_rust::{
-    LocalUriProvider, StaticUriProvider, UAttributes, UCode, UPayloadFormat,
-    communication::{
-        InMemoryRpcServer, RequestHandler, RpcServer, ServiceInvocationError, UPayload,
-    },
+    LocalUriProvider, StaticUriProvider, UCode,
+    communication::InMemoryRpcServer,
 };
 use up_transport_mqtt5::{Mqtt5TransportOptions, MqttClientOptions};
-use up_transport_zenoh::UPTransportZenoh;
+use up_transport_zenoh::{UPTransportZenoh, zenoh_config::Config};
 
-mod deployment_state;
+mod ecu_target;
 
 pub(crate) const METHOD_GET_RESOURCE_ID: u16 = 0x0001;
 pub(crate) const METHOD_UPDATE_RESOURCE_ID: u16 = 0x0002;
@@ -52,7 +48,12 @@ pub(crate) const METHOD_DELETE_RESOURCE_ID: u16 = 0x0003;
 #[command(version, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
-    #[arg(long, value_name = "NAME", env = "UP_AUTHORITY", default_value = "ecu-updater.app")]
+    #[arg(
+        long,
+        value_name = "NAME",
+        env = "UP_AUTHORITY",
+        default_value = "ecu-updater.app"
+    )]
     authority: String,
     #[arg(long, value_name = "ID", env = "UP_ENTITY_ID", default_value = "0x0000A100", value_parser = maybe_hex::<u32>)]
     uentity_id: u32,
@@ -80,6 +81,7 @@ async fn get_transport(
         Commands::Zenoh => {
             info!("Using default Zenoh transport");
             let transport = UPTransportZenoh::builder(cli.authority)?
+                .with_config(Config::default())
                 .build()
                 .await
                 .map(Arc::new)?;
@@ -118,162 +120,6 @@ async fn get_transport(
     }
 }
 
-fn extract_request_data(
-    request_payload: Option<UPayload>,
-) -> Result<Value, ServiceInvocationError> {
-    let Some(req_payload) = request_payload
-        .filter(|req_payload| req_payload.payload_format() == UPayloadFormat::UPAYLOAD_FORMAT_JSON)
-    else {
-        return Err(ServiceInvocationError::InvalidArgument(
-            "request has no JSON payload".to_string(),
-        ));
-    };
-
-    serde_json::from_slice(req_payload.payload().to_vec().as_slice()).map_err(|err| {
-        warn!("failed to deserialize request payload: {:?}", err);
-        ServiceInvocationError::InvalidArgument(
-            "request payload is not a valid UTF-8 string".to_string(),
-        )
-    })
-}
-
-pub(crate) struct GetOperation {
-    state: Arc<deployment_state::DeploymentState>,
-}
-
-#[async_trait::async_trait]
-impl RequestHandler for GetOperation {
-    // expects a DeploymentSpec in the request and returns an array of ComponentSpecs
-    async fn handle_request(
-        &self,
-        _resource_id: u16,
-        message_attributes: &UAttributes,
-        request_payload: Option<UPayload>,
-    ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        let request_data = extract_request_data(request_payload)?;
-        info!(
-            "processing GET request [from: {}]",
-            message_attributes
-                .source
-                .as_ref()
-                .unwrap_or_default()
-                .to_uri(true),
-        );
-        if log_enabled!(log::Level::Debug) {
-            debug!(
-                "payload: {}",
-                serde_json::to_string_pretty(&request_data).expect("failed to serialize Value")
-            );
-        }
-        let deployment_spec: DeploymentSpec =
-            serde_json::from_value(request_data["deployment"].clone()).map_err(|err| {
-                info!("request does not contain DeploymentSpec: {err}");
-                ServiceInvocationError::InvalidArgument(
-                    "request does not contain DeploymentSpec".to_string(),
-                )
-            })?;
-        let component_specs: Vec<ComponentSpec> =
-            serde_json::from_value(request_data["components"].clone()).map_err(|err| {
-                info!("request does not contain ComponentSpec array: {err}");
-                ServiceInvocationError::InvalidArgument(
-                    "request does not contain ComponentSpec array".to_string(),
-                )
-            })?;
-
-        let result = self.state.get_status(component_specs, deployment_spec);
-        let serialized_response_data = serde_json::to_vec(&result).map_err(|err| {
-            warn!("error serializing ComponentSpec: {err}");
-            ServiceInvocationError::Internal("failed to create response payload".to_string())
-        })?;
-        if log_enabled!(log::Level::Debug) {
-            eprintln!(
-                "returning response: {}",
-                serde_json::to_string_pretty(&result).expect("failed to serialize Value")
-            );
-        }
-        let response_payload = UPayload::new(
-            serialized_response_data,
-            UPayloadFormat::UPAYLOAD_FORMAT_JSON,
-        );
-        Ok(Some(response_payload))
-    }
-}
-
-pub(crate) struct ApplyOperation {
-    state: Arc<deployment_state::DeploymentState>,
-}
-
-#[async_trait::async_trait]
-impl RequestHandler for ApplyOperation {
-    async fn handle_request(
-        &self,
-        resource_id: u16,
-        message_attributes: &UAttributes,
-        request_payload: Option<UPayload>,
-    ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        let request_data = extract_request_data(request_payload)?;
-        info!(
-            "processing request [method: {}, from: {}]",
-            message_attributes
-                .sink
-                .as_ref()
-                .unwrap_or_default()
-                .to_uri(true),
-            message_attributes
-                .source
-                .as_ref()
-                .unwrap_or_default()
-                .to_uri(true),
-        );
-        if log_enabled!(log::Level::Debug) {
-            let json =
-                serde_json::to_string_pretty(&request_data).expect("failed to serialize Value");
-            debug!("payload: {}", json);
-        }
-
-        let deployment_spec: DeploymentSpec =
-            serde_json::from_value(request_data["deployment"].clone()).map_err(|err| {
-                info!("request does not contain DeploymentSpec: {err}");
-                ServiceInvocationError::InvalidArgument(
-                    "request does not contain DeploymentSpec".to_string(),
-                )
-            })?;
-
-        let affected_components: Vec<ComponentSpec> =
-            serde_json::from_value(request_data["components"].clone()).map_err(|err| {
-                info!("request does not contain ComponentSpec array: {err}");
-                ServiceInvocationError::InvalidArgument(
-                    "request does not contain ComponentSpec array".to_string(),
-                )
-            })?;
-
-        let result = match resource_id {
-            METHOD_UPDATE_RESOURCE_ID => self
-                .state
-                .update_components(affected_components, deployment_spec),
-            METHOD_DELETE_RESOURCE_ID => self
-                .state
-                .delete_components(affected_components, deployment_spec),
-            _ => {
-                return Err(ServiceInvocationError::Unimplemented(
-                    "no such operation".to_string(),
-                ));
-            }
-        };
-
-        let serialized_response_data = serde_json::to_vec(&result).map_err(|err| {
-            warn!("error serializing HashMap: {err}");
-            ServiceInvocationError::Internal("failed to create response payload".to_string())
-        })?;
-
-        let response_payload = UPayload::new(
-            serialized_response_data,
-            UPayloadFormat::UPAYLOAD_FORMAT_JSON,
-        );
-        Ok(Some(response_payload))
-    }
-}
-
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -285,41 +131,36 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let transport = get_transport(cli).await?;
 
-    let deployment_state = Arc::new(deployment_state::DeploymentState::default());
+    let deployment_target = Arc::new(ecu_target::EcuTarget::default());
     // create the RpcServer using the local transport
     let rpc_server = InMemoryRpcServer::new(transport.clone(), uri_provider.clone());
     // and register endpoints for the service operations
-    let get_op = Arc::new(GetOperation {
-        state: deployment_state.clone(),
-    });
-    let apply_op = Arc::new(ApplyOperation {
-        state: deployment_state.clone(),
-    });
+    up_rust::symphony::register_target_provider_endpoints(
+        &rpc_server,
+        deployment_target.clone(),
+    ).await?;
 
-    rpc_server
-        .register_endpoint(None, METHOD_GET_RESOURCE_ID, get_op)
-        .await?;
-    rpc_server
-        .register_endpoint(None, METHOD_UPDATE_RESOURCE_ID, apply_op.clone())
-        .await?;
-    rpc_server
-        .register_endpoint(None, METHOD_DELETE_RESOURCE_ID, apply_op)
-        .await?;
     info!(
         "ECU Updater service is up and running [local URI: {}]",
         uri_provider.get_source_uri().to_uri(true)
     );
     info!(
         "GET    method URI: {}",
-        uri_provider.get_resource_uri(METHOD_GET_RESOURCE_ID).to_uri(true)
+        uri_provider
+            .get_resource_uri(METHOD_GET_RESOURCE_ID)
+            .to_uri(true)
     );
     info!(
         "UPDATE method URI: {}",
-        uri_provider.get_resource_uri(METHOD_UPDATE_RESOURCE_ID).to_uri(true)
+        uri_provider
+            .get_resource_uri(METHOD_UPDATE_RESOURCE_ID)
+            .to_uri(true)
     );
     info!(
         "DELETE method URI: {}",
-        uri_provider.get_resource_uri(METHOD_DELETE_RESOURCE_ID).to_uri(true)
+        uri_provider
+            .get_resource_uri(METHOD_DELETE_RESOURCE_ID)
+            .to_uri(true)
     );
     tokio::signal::ctrl_c().await?;
     info!("Received SIGTERM, shutting down ...");
