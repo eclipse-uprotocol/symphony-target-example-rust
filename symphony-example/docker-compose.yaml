@@ -23,6 +23,16 @@ networks:
     attachable: true
 
 services:
+  dozzle: # https://dozzle.dev/guide/what-is-dozzle
+    image: amir20/dozzle:latest
+    container_name: dozzle
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+    ports:
+      - 8080:8080
   symphony-api:
     image: ghcr.io/eclipse-symphony/symphony-api:0.48.43
     container_name: symphony-api
@@ -40,7 +50,7 @@ services:
       - RUST_LOG=info,uprotocol=debug
     restart: unless-stopped
   ecu-updater:
-    image: ghcr.io/eclipse-uprotocol/ecu-updater:0.1.0
+    image: ghcr.io/eclipse-uprotocol/symphony-target-example-rust/ecu-updater:0.1.1
     build:
       context: ..
       dockerfile: Dockerfile
@@ -49,6 +59,5 @@ services:
     networks:
       - vehicle
     environment:
-      - UP_AUTHORITY=ecu-updater
-      - UP_ENTITY_ID=0x0001A100
-      - RUST_LOG=info
+      - UP_LOCAL_ADDRESS=up://ecu-updater/1A100/1/0
+      - RUST_LOG=info,up_rust::symphony=debug
