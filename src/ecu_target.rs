@@ -13,7 +13,7 @@
 use std::{collections::HashMap, sync::RwLock};
 
 use async_trait::async_trait;
-use log::info;
+use tracing::info;
 use symphony::models::{ComponentResultSpec, ComponentSpec, DeploymentSpec, State};
 
 use up_rust::symphony::DeploymentTarget;

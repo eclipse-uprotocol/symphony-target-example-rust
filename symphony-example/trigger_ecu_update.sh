@@ -19,12 +19,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+script_dir=${0%/*}
 symphony_api_url="http://localhost:8082/v1alpha2/"
 
 token=$(curl -s -X POST -H "Content-Type: application/json" -d '{"username":"admin","password":""}' "${symphony_api_url}users/auth" | jq -r '.accessToken')
 authorization_header="Authorization: Bearer $token"
 
-curl -sS -X POST -H "$authorization_header" -H "Content-Type: application/json" --data @./target.json "${symphony_api_url}targets/registry/ecu-updater-target"
+curl -sS -X POST -H "$authorization_header" -H "Content-Type: application/json" --data @"$script_dir/target.json" "${symphony_api_url}targets/registry/ecu-updater-target"
 
 # Prompt user to press Enter to continue after the target has been registered
 read -r -p "Target registered. Press Enter to remove..."

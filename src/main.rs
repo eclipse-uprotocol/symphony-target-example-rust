@@ -25,14 +25,14 @@ The operations are exposed as uProtocol service endpoints using an in-memory RPC
 The example supports two different transports: Zenoh and MQTT 5. The transport can be
 selected via command line arguments.
  */
-use std::{sync::Arc, time::Duration};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
 use backon::{ExponentialBuilder, Retryable};
-use clap::{Parser, command};
+use clap::Parser;
 use clap_num::maybe_hex;
-use log::info;
+use tracing::info;
 use up_rust::{
-    LocalUriProvider, StaticUriProvider, UCode,
+    LocalUriProvider, StaticUriProvider, UCode, UUri,
     communication::InMemoryRpcServer,
 };
 use up_transport_mqtt5::{Mqtt5TransportOptions, MqttClientOptions};
@@ -50,14 +50,34 @@ pub(crate) const METHOD_DELETE_RESOURCE_ID: u16 = 0x0003;
 struct Cli {
     #[arg(
         long,
+        value_name = "URI",
+        env = "UP_LOCAL_ADDRESS",
+        value_parser = UUri::from_str,
+        conflicts_with_all = ["authority", "uentity_id", "uentity_version"],
+    )]
+    local_address: Option<UUri>,
+    #[arg(
+        long,
         value_name = "NAME",
         env = "UP_AUTHORITY",
         default_value = "ecu-updater.app"
     )]
     authority: String,
-    #[arg(long, value_name = "ID", env = "UP_ENTITY_ID", default_value = "0x0000A100", value_parser = maybe_hex::<u32>)]
+    #[arg(
+        long,
+        value_name = "ID",
+        env = "UP_ENTITY_ID",
+        default_value = "0x0000A100",
+        value_parser = maybe_hex::<u32>
+    )]
     uentity_id: u32,
-    #[arg(long, value_name = "VERSION", env = "UP_ENTITY_VERSION", default_value = "0x01", value_parser = maybe_hex::<u8>)]
+    #[arg(
+        long,
+        value_name = "VERSION",
+        env = "UP_ENTITY_VERSION",
+        default_value = "0x01",
+        value_parser = maybe_hex::<u8>
+    )]
     uentity_version: u8,
     #[command(subcommand)]
     command: Commands,
@@ -122,13 +142,16 @@ async fn get_transport(
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
+    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
-    let uri_provider = Arc::new(StaticUriProvider::new(
-        cli.authority.clone(),
-        cli.uentity_id,
-        cli.uentity_version,
-    ));
+    let uri_provider = match &cli.local_address {
+        Some(local_address) => Arc::new(StaticUriProvider::try_from(local_address)?),
+        None => Arc::new(StaticUriProvider::new(
+            cli.authority.clone(),
+            cli.uentity_id,
+            cli.uentity_version,
+        )),
+    };
     let transport = get_transport(cli).await?;
 
     let deployment_target = Arc::new(ecu_target::EcuTarget::default());
